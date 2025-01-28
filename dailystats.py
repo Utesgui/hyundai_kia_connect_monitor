@@ -58,7 +58,7 @@ if D:
     set_dbg()
 
 # Initializing a queue for about 30 days
-MAX_QUEUE_LEN = 122
+MAX_QUEUE_LEN = 1220
 PRINTED_OUTPUT_QUEUE: deque[str] = deque(maxlen=MAX_QUEUE_LEN)
 
 KEYWORD_LIST = ["help", "sheetupdate", "debug"]
