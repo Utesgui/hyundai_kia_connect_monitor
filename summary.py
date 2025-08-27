@@ -156,7 +156,7 @@ EV_RANGE = 10  # EV range (optional field)
 DAY_COUNTER = 0
 
 # Initializing a queue with maximum size
-LAST_OUTPUT_QUEUE_MAX_LEN = 900
+LAST_OUTPUT_QUEUE_MAX_LEN = 750
 LAST_OUTPUT_QUEUE: deque[str] = deque(maxlen=LAST_OUTPUT_QUEUE_MAX_LEN)
 
 SHEET: typing.Any = None
