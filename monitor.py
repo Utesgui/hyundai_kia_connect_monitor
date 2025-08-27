@@ -93,7 +93,7 @@ for kindex in range(1, len(sys.argv)):
 
 if KEYWORD_ERROR or arg_has("help"):
     print("Usage: python monitor.py")
-    exit()
+    sys.exit(-1)
 
 TEST = arg_has("test")
 # == read monitor in monitor.cfg ===========================
@@ -108,6 +108,21 @@ PASSWORD = monitor_settings["password"]
 PIN = monitor_settings["pin"]
 USE_GEOCODE = get_bool(monitor_settings, "use_geocode", False)
 USE_GEOCODE_EMAIL = get_bool(monitor_settings, "use_geocode_email", False)
+GEOCODE_PROVIDER = to_int(
+    get(monitor_settings, "geocode_provider", "1")
+)  # 1=OPENSTREETMAP 2=GOOGLE
+if GEOCODE_PROVIDER < 1 or GEOCODE_PROVIDER > 2:
+    logging.error("Invalid GEOCODE_PROVIDER in monitor.cfg, expected 1 or 2")
+    sys.exit(-1)
+
+GOOGLE_API_KEY = get(monitor_settings, "google_api_key", "")
+if len(GOOGLE_API_KEY) == 0:
+    GOOGLE_API_KEY = None  # default no API key needed for OPENSTREETMAP
+
+if GEOCODE_PROVIDER == 2 and GOOGLE_API_KEY is None:
+    logging.error("Missing GOOGLE_API_KEY in monitor.cfg")
+    sys.exit(-1)
+
 LANGUAGE = monitor_settings["language"]
 ODO_METRIC = get(monitor_settings, "odometer_metric", "km").lower()
 MONITOR_INFINITE = get_bool(monitor_settings, "monitor_infinite", False)
@@ -117,6 +132,21 @@ MONITOR_INFINITE_INTERVAL_MINUTES = to_int(
 MONITOR_EXECUTE_COMMANDS_WHEN_SOMETHING_WRITTEN_OR_ERROR = get(
     monitor_settings, "monitor_execute_commands_when_something_written_or_error", ""
 )
+
+MONITOR_FORCE_SYNC_WHEN_ODOMETER_DIFFERENT_LOCATION_WORKAROUND = get_bool(
+    monitor_settings,
+    "monitor_force_sync_when_odometer_different_location_workaround",
+    False,
+)
+MONITOR_FORCE_SYNC_MAX_COUNT = to_int(
+    get(
+        monitor_settings,
+        "monitor_force_sync_max_count",
+        "10",
+    )
+)
+MONITOR_FORCE_SYNC_COUNT = 0
+
 
 MONITOR_SOMETHING_WRITTEN_OR_ERROR = False
 
@@ -379,15 +409,66 @@ def handle_trip_info(
                 )
 
 
+def get_odometer_str(vehicle: Vehicle) -> str:
+    """get odometer string"""
+    odometer = vehicle.odometer
+    if odometer is None:
+        odometer = 0.0
+    if to_miles_needed(vehicle):
+        odometer = km_to_mile(odometer)
+    odometer_str = f"{float_to_string_no_trailing_zero(odometer)}"
+    return odometer_str
+
+
 def handle_one_vehicle(
-    manager: VehicleManager, vehicle: Vehicle, number_of_vehicles: int
+    manager: VehicleManager, vehicle_id: str, number_of_vehicles: int
 ) -> bool:
     """handle one vehicle and return if error occurred"""
+    global MONITOR_FORCE_SYNC_COUNT  # pylint:disable=global-statement
+    vehicle: Vehicle = MANAGER.vehicles[vehicle_id]
     try:
         handle_trip_info(manager, vehicle, number_of_vehicles)
     except Exception as ex:  # pylint: disable=broad-except
         logging.warning("Warning: handle_trip_info Exception: " + str(ex))
         traceback.print_exc()
+
+    filename = "monitor.csv"
+    if number_of_vehicles > 1:
+        filename = "monitor." + vehicle.VIN + ".csv"
+    prev_line = get_last_line(Path(filename)).strip()
+    list_prev_line = prev_line.split(",")
+
+    location_last_updated_at = get_safe_datetime(
+        vehicle.location_last_updated_at, vehicle.timezone
+    )
+    vehicle_last_updated_at = get_safe_datetime(
+        vehicle.last_updated_at, vehicle.timezone
+    )
+    dates = [vehicle_last_updated_at, location_last_updated_at]
+    last_updated_at = max(dates)
+
+    # workaround for location is not updated anymore since may 2025
+    # force sync when odometer is different when configured
+    odometer_str = get_odometer_str(vehicle)
+    if (
+        MONITOR_INFINITE
+        and MONITOR_FORCE_SYNC_WHEN_ODOMETER_DIFFERENT_LOCATION_WORKAROUND
+        and MONITOR_FORCE_SYNC_COUNT < MONITOR_FORCE_SYNC_MAX_COUNT
+        and len(list_prev_line) == 11
+        and odometer_str != list_prev_line[5].strip()
+    ):  # odometer different
+        MONITOR_FORCE_SYNC_COUNT += 1
+        logging.info(
+            f"Forced sync, new odometer=[{odometer_str}], old_odometer=[{list_prev_line[5].strip()}]"  # noqa
+        )
+        _ = D and dbg(f"org={vehicle}")  # noqa
+        MANAGER.check_and_force_update_vehicles(0)  # forced sync
+        MANAGER.update_all_vehicles_with_cached_state()  # needed >= 2.0.0
+        vehicle = MANAGER.vehicles[vehicle_id]
+        _ = D and dbg(f"upd={vehicle}")  # noqa
+        _ = D and dbg(f"prev={prev_line}")
+        # newest odometer, keep last_updated_at, because force sync changes the latter
+        odometer_str = get_odometer_str(vehicle)
 
     geocode = ""
     if USE_GEOCODE:
@@ -399,46 +480,30 @@ def handle_one_vehicle(
 
     location_longitude = get_safe_float(vehicle.location_longitude)
     location_latitude = get_safe_float(vehicle.location_latitude)
-    last_updated_at = get_safe_datetime(vehicle.last_updated_at, vehicle.timezone)
-    location_last_updated_at = get_safe_datetime(
-        vehicle.location_last_updated_at, vehicle.timezone
-    )
-    dates = [last_updated_at, location_last_updated_at]
-    newest_updated_at = max(dates)
-    _ = D and dbg(f"newest: {newest_updated_at} from {dates}")
+
     ev_driving_range = to_int(f"{vehicle.ev_driving_range}")
-    odometer = vehicle.odometer
-    if odometer is None:
-        odometer = 0.0
-    if to_miles_needed(vehicle):
-        odometer = km_to_mile(odometer)
 
     # server cache last_updated_at sometimes shows 2 (timezone) hours difference
     # https://github.com/Hyundai-Kia-Connect/kia_uvo/issues/931#issuecomment-2381025284
-    filename = "monitor.csv"
-    if number_of_vehicles > 1:
-        filename = "monitor." + vehicle.VIN + ".csv"
-    last_line = get_last_line(Path(filename)).strip()
-    list2 = last_line.split(",")
-    if len(list2) == 11:
+    if len(list_prev_line) == 11:
         # convert timezone string to datetime and see if it is in utcoffset range
-        previous_updated_at_string = list2[0]  # get datetime
+        previous_updated_at_string = list_prev_line[0]  # get datetime
         if (
             len(previous_updated_at_string) == 25
         ):  # datetime string must be 25 in length
             previous_updated_at = datetime.strptime(
                 previous_updated_at_string, "%Y-%m-%d %H:%M:%S%z"
             )
-            if newest_updated_at < previous_updated_at:
-                utcoffset = newest_updated_at.utcoffset()
+            if last_updated_at < previous_updated_at:
+                utcoffset = last_updated_at.utcoffset()
                 if utcoffset:
-                    newest_updated_at_corrected = newest_updated_at + utcoffset
+                    newest_updated_at_corrected = last_updated_at + utcoffset
                     if newest_updated_at_corrected >= previous_updated_at:
                         _ = D and dbg(
-                            f"fixed newest_updated_at: old: {newest_updated_at} new: {newest_updated_at_corrected} previous: {previous_updated_at}"  # noqa
+                            f"fixed newest_updated_at: old: {last_updated_at} new: {newest_updated_at_corrected} previous: {previous_updated_at}"  # noqa
                         )
-                        newest_updated_at = newest_updated_at_corrected
-                newest_updated_at = max(newest_updated_at, previous_updated_at)
+                        last_updated_at = newest_updated_at_corrected
+                last_updated_at = max(last_updated_at, previous_updated_at)
 
     ev_battery_percentage = vehicle.ev_battery_percentage
     if ev_battery_percentage is None:
@@ -446,27 +511,31 @@ def handle_one_vehicle(
     ev_battery_is_charging = get_safe_bool(vehicle.ev_battery_is_charging)
     ev_battery_is_plugged_in = get_safe_bool(vehicle.ev_battery_is_plugged_in)
 
-    line = f"{newest_updated_at}, {location_longitude}, {location_latitude}, {vehicle.engine_is_running}, {vehicle.car_battery_percentage}, {float_to_string_no_trailing_zero(odometer)}, {ev_battery_percentage}, {ev_battery_is_charging}, {ev_battery_is_plugged_in}, {geocode}, {ev_driving_range}"  # noqa
+    line = f"{last_updated_at}, {location_longitude}, {location_latitude}, {vehicle.engine_is_running}, {vehicle.car_battery_percentage}, {odometer_str}, {ev_battery_percentage}, {ev_battery_is_charging}, {ev_battery_is_plugged_in}, {geocode}, {ev_driving_range}"  # noqa
     if "None, None" in line:  # something gone wrong, retry
         logging.warning(f"Skipping Unexpected line: {line}")
         return True  # exit subroutine with error
 
-    if line != last_line:
+    if line != prev_line:
         # check if everything is the same without timestamp and address
         # seems that the server sometimes returns wrong timestamp
-        list1 = line.split(",")
+        list_current_line = line.split(",")
         same = False
-        if len(list1) == 11 and len(list2) == 11:
+        if len(list_current_line) == 11 and len(list_prev_line) == 11:
             same = True
-            for index, value in enumerate(list1):
-                if index != 9 and value != list2[index]:
+            for index, value in enumerate(list_current_line):
+                if index != 0 and index != 9 and value != list_prev_line[index]:
+                    # excluded last_updated_at and geocode
                     same = False
                     break  # finished
         if not same:
-            _ = D and dbg(f"Writing1:\nline=[{line}]\nlast=[{last_line}]")
+            logging.info("Writing monitor.csv line")
+            logging.info(f"curr={line}")
+            _ = D and dbg(f"prev={prev_line}")
+            _ = D and dbg(f"newest: {last_updated_at} from {dates}")
             if TEST:
-                send_monitor_csv_line_to_mqtt(last_line)
-                send_monitor_csv_line_to_domoticz(last_line)
+                send_monitor_csv_line_to_mqtt(prev_line)
+                send_monitor_csv_line_to_domoticz(prev_line)
             else:
                 writeln(filename, line)
                 send_monitor_csv_line_to_mqtt(line)
@@ -474,7 +543,7 @@ def handle_one_vehicle(
 
     handle_daily_stats(vehicle, number_of_vehicles)
     vehicle_stats = [
-        str(newest_updated_at),
+        str(vehicle_last_updated_at),
         str(location_last_updated_at),
         line,
         "",
@@ -568,21 +637,22 @@ def handle_vehicles(login: bool) -> bool:
                     pin=PIN,
                     geocode_api_enable=USE_GEOCODE,
                     geocode_api_use_email=USE_GEOCODE_EMAIL,
+                    geocode_provider=GEOCODE_PROVIDER,
+                    geocode_api_key=GOOGLE_API_KEY,
                     language=LANGUAGE,
                 )
 
             if MANAGER:
                 MANAGER.check_and_refresh_token()
                 MANAGER.update_all_vehicles_with_cached_state()  # needed >= 2.0.0
-
                 error = False
                 number_of_vehicles = len(MANAGER.vehicles)
-                for _, vehicle in MANAGER.vehicles.items():
+                for vehicle_id, vehicle in MANAGER.vehicles.items():
                     if TEST:  # use fake VIN
                         set_vin("KMHKR81CPNU012345")
                     else:
                         set_vin(vehicle.VIN)
-                    error = handle_one_vehicle(MANAGER, vehicle, number_of_vehicles)
+                    error = handle_one_vehicle(MANAGER, vehicle_id, number_of_vehicles)
                     if error:  # something gone wrong, exit vehicles loop
                         error_string = "Error occurred in handle_one_vehicle()"
                         break
@@ -627,7 +697,7 @@ def handle_vehicles(login: bool) -> bool:
 
 def monitor():
     """monitor"""
-    global MONITOR_SOMETHING_WRITTEN_OR_ERROR  # pylint:disable=global-statement
+    global MONITOR_SOMETHING_WRITTEN_OR_ERROR, MONITOR_FORCE_SYNC_COUNT  # pylint:disable=global-statement  # noqa
     current_time = datetime.now()
     prev_time = current_time - timedelta(days=1.0)  # once per day login
     not_done_once = True
@@ -653,6 +723,10 @@ def monitor():
             run_commands()
 
         if MONITOR_INFINITE:
+            if not same_day(prev_time, current_time):
+                MONITOR_FORCE_SYNC_COUNT = (
+                    0  # start fresh force sync count when configured
+                )
             prev_time = current_time
 
             # calculate number of seconds to sleep
