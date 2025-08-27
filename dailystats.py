@@ -58,7 +58,6 @@ if D:
     set_dbg()
 
 # Initializing a queue for about 30 days
-# Maximum rows in Google Sheets is 1000, need to leave room for other data
 MAX_QUEUE_LEN = 500
 PRINTED_OUTPUT_QUEUE: deque[str] = deque(maxlen=MAX_QUEUE_LEN)
 
