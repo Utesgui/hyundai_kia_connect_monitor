@@ -156,7 +156,7 @@ EV_RANGE = 10  # EV range (optional field)
 DAY_COUNTER = 0
 
 # Initializing a queue with maximum size
-LAST_OUTPUT_QUEUE_MAX_LEN = 990
+LAST_OUTPUT_QUEUE_MAX_LEN = 1220
 LAST_OUTPUT_QUEUE: deque[str] = deque(maxlen=LAST_OUTPUT_QUEUE_MAX_LEN)
 
 SHEET: typing.Any = None
@@ -952,17 +952,12 @@ def handle_line(
 ) -> GrandTotals:
     """handle_line"""
     _ = D and dbg(f"handle_line: {split}, {prev_split}")
-    global HIGHEST_ODO
+    global HIGHEST_ODO  # pylint:disable=global-statement
     odo = to_float(split[ODO])
     if odo == 0.0:
         _ = D and dbg(f"bad odo: {odo}")
         return totals  # bad line
-    
-    # Reset HIGHEST_ODO if there's a significant drop (indicating car change)
-    if HIGHEST_ODO > 0 and odo < HIGHEST_ODO * 0.5:  # If new odo is less than 50% of highest
-        print(f"Detected car change: resetting odometer tracking from {HIGHEST_ODO} to {odo}")
-        HIGHEST_ODO = odo
-    elif odo < HIGHEST_ODO:
+    if odo < HIGHEST_ODO:
         if D:
             dbg(f"taking over highest ODO: {HIGHEST_ODO} odo={odo}")
         odo = HIGHEST_ODO
