@@ -957,12 +957,13 @@ def handle_line(
     if odo == 0.0:
         _ = D and dbg(f"bad odo: {odo}")
         return totals  # bad line
-    if odo < HIGHEST_ODO:
-        if D:
-            dbg(f"taking over highest ODO: {HIGHEST_ODO} odo={odo}")
-        odo = HIGHEST_ODO
-    else:
-        HIGHEST_ODO = odo
+    # Comment out or remove the HIGHEST_ODO logic
+    # if odo < HIGHEST_ODO:
+    #     if D:
+    #         dbg(f"taking over highest ODO: {HIGHEST_ODO} odo={odo}")
+    #     odo = HIGHEST_ODO
+    # else:
+    #     HIGHEST_ODO = odo
 
     current_day = parser.parse(split[DT])
     current_day_values = init(current_day, odo, to_int(split[SOC]), to_int(split[V12]))
