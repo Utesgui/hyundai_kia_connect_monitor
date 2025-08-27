@@ -776,6 +776,12 @@ def get_format(range_str: str, special: bool):
 def append(array: list[dict], formats: list[dict], row: int, values) -> int:
     """append"""
     row += 1
+    
+    # Safety check: prevent writing beyond sheet limits
+    if row > SHEET.row_count - 5:  # Leave some buffer rows
+        logging.warning(f"Append operation would exceed sheet row limit at row {row}. Skipping.")
+        return row - 1  # Return previous row to avoid incrementing
+        
     array.append({"range": f"O{row}:U{row}", "values": values})
     formats.append(get_format(f"N{row}:U{row}", False))
     return row
@@ -783,6 +789,29 @@ def append(array: list[dict], formats: list[dict], row: int, values) -> int:
 
 def print_output_queue() -> None:
     """print output queue"""
+    # Check if we need to expand the sheet before processing
+    estimated_rows_needed = len(PRINTED_OUTPUT_QUEUE) + 50  # Add buffer for other data
+    current_sheet_rows = SHEET.row_count
+    
+    logging.info(f"Queue length: {len(PRINTED_OUTPUT_QUEUE)}, Estimated rows needed: {estimated_rows_needed}, Current sheet rows: {current_sheet_rows}")
+    
+    if estimated_rows_needed > current_sheet_rows:
+        new_row_count = max(estimated_rows_needed + 100, current_sheet_rows + 500)  # Add extra buffer
+        logging.info(f"Expanding sheet from {current_sheet_rows} to {new_row_count} rows")
+        try:
+            SHEET.add_rows(new_row_count - current_sheet_rows)
+            logging.info(f"Successfully expanded sheet to {SHEET.row_count} rows")
+        except Exception as ex:
+            logging.error(f"Failed to expand sheet: {ex}")
+            # Try alternative method - resize the entire sheet
+            try:
+                SHEET.resize(rows=new_row_count)
+                logging.info(f"Successfully resized sheet to {new_row_count} rows")
+            except Exception as ex2:
+                logging.error(f"Failed to resize sheet: {ex2}")
+                # Continue with current sheet size and rely on safety checks
+                logging.warning("Continuing with current sheet size, will use safety checks to prevent errors")
+    
     array: list[dict] = []
     formats: list[dict] = []
     row = 0
@@ -799,6 +828,12 @@ def print_output_queue() -> None:
     array.append({"range": "N1", "values": [[f"{ODO_METRIC}/kWh"]]})
     for queue_output in PRINTED_OUTPUT_QUEUE:
         row += 1
+        
+        # Safety check: prevent writing beyond sheet limits
+        if row > SHEET.row_count - 5:  # Leave some buffer rows
+            logging.warning(f"Approaching sheet row limit at row {row}/{SHEET.row_count}. Stopping data write to prevent errors.")
+            break
+            
         _ = D and dbg(f"write row: {row} {queue_output}")
         values = split_output_to_sheet_list(queue_output)
         array.append({"range": f"A{row}:G{row}", "values": values})
