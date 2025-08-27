@@ -952,18 +952,22 @@ def handle_line(
 ) -> GrandTotals:
     """handle_line"""
     _ = D and dbg(f"handle_line: {split}, {prev_split}")
-    global HIGHEST_ODO  # pylint:disable=global-statement
+    global HIGHEST_ODO
     odo = to_float(split[ODO])
     if odo == 0.0:
         _ = D and dbg(f"bad odo: {odo}")
         return totals  # bad line
-    # Comment out or remove the HIGHEST_ODO logic
-    # if odo < HIGHEST_ODO:
-    #     if D:
-    #         dbg(f"taking over highest ODO: {HIGHEST_ODO} odo={odo}")
-    #     odo = HIGHEST_ODO
-    # else:
-    #     HIGHEST_ODO = odo
+    
+    # Reset HIGHEST_ODO if there's a significant drop (indicating car change)
+    if HIGHEST_ODO > 0 and odo < HIGHEST_ODO * 0.5:  # If new odo is less than 50% of highest
+        print(f"Detected car change: resetting odometer tracking from {HIGHEST_ODO} to {odo}")
+        HIGHEST_ODO = odo
+    elif odo < HIGHEST_ODO:
+        if D:
+            dbg(f"taking over highest ODO: {HIGHEST_ODO} odo={odo}")
+        odo = HIGHEST_ODO
+    else:
+        HIGHEST_ODO = odo
 
     current_day = parser.parse(split[DT])
     current_day_values = init(current_day, odo, to_int(split[SOC]), to_int(split[V12]))
